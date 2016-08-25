@@ -128,7 +128,11 @@ private[sql] object DataSourceStrategy extends Strategy with Logging {
         l,
         projects,
         filters,
-        (a, f) => t.buildInternalScan(a.map(_.name).toArray, f, t.paths, confBroadcast)) :: Nil
+        (a, f) => t.buildInternalScan(
+          generateRequiredColumns(projects, a.map(_.name).toArray,
+            t.sqlContext.conf.isParquetNestColumnPruning),
+          f, t.paths, confBroadcast)
+      ) :: Nil
 
     case l @ LogicalRelation(baseRelation: TableScan, _) =>
       execution.PhysicalRDD.createFromDataSource(
@@ -174,7 +178,9 @@ private[sql] object DataSourceStrategy extends Strategy with Logging {
           // assuming partition columns data stored in data files are always consistent with those
           // partition values encoded in partition directory paths.
           val dataRows = relation.buildInternalScan(
-            requiredDataColumns.map(_.name).toArray, filters, Array(dir), confBroadcast)
+            generateRequiredColumns(projections, requiredDataColumns.map(_.name).toArray,
+              relation.sqlContext.conf.isParquetNestColumnPruning)
+            , filters, Array(dir), confBroadcast)
 
           // Merges data values with partition values.
           mergeWithPartitionValues(
@@ -206,6 +212,65 @@ private[sql] object DataSourceStrategy extends Strategy with Logging {
       scanBuilder)
 
     sparkPlan
+  }
+
+  private def generateRequiredColumns(
+      projects: Seq[NamedExpression],
+      columns: Array[String],
+      isParquetNestColumnPruning: Boolean) : Array[String] = {
+    def generateAttributeMap(nestFieldMap: scala.collection.mutable.Map[String, Seq[String]],
+                             isNestField: Boolean, curString: Option[String],
+                             node: Expression) {
+      node match {
+        case ai: GetArrayItem =>
+          // Here we drop the curString for simplify array and map support.
+          // Same strategy in GetArrayStructFields and GetMapValue.
+          // For example:
+          // struct_a.array_b[1].struct_c.string_d will convert to struct_a.array_b
+          generateAttributeMap(nestFieldMap, isNestField = true, None, ai.child)
+
+        case asf: GetArrayStructFields =>
+          generateAttributeMap(nestFieldMap, isNestField = true, None, asf.child)
+
+        case mv: GetMapValue =>
+          generateAttributeMap(nestFieldMap, isNestField = true, None, mv.child)
+
+        case attr: AttributeReference =>
+          if (isNestField && curString.isDefined) {
+            val attrStr = attr.name
+            if (nestFieldMap.contains(attrStr)) {
+              nestFieldMap(attrStr) = nestFieldMap(attrStr) ++ Seq(attrStr + "." + curString.get)
+            } else {
+              nestFieldMap += (attrStr -> Seq(attrStr + "." + curString.get))
+            }
+          }
+        case sf: GetStructField =>
+          val str = if (curString.isDefined) {
+            sf.name.get + "." + curString.get
+          } else sf.name.get
+          generateAttributeMap(nestFieldMap, isNestField = true, Option(str), sf.child)
+        case _ =>
+          if (node.children.nonEmpty) {
+            node.children.foreach(child => generateAttributeMap(nestFieldMap,
+              isNestField, curString, child))
+          }
+      }
+    }
+
+    if (!isParquetNestColumnPruning) {
+      columns
+    } else {
+      val nestFieldMap = scala.collection.mutable.Map.empty[String, Seq[String]]
+      projects.foreach(p => generateAttributeMap(nestFieldMap, isNestField = false, None, p))
+      val col_list = columns.toList.flatMap(col => {
+        if (nestFieldMap.contains(col)) {
+          nestFieldMap.get(col).get.toList
+        } else {
+          List(col)
+        }
+      })
+      col_list.toArray
+    }
   }
 
   private def mergeWithPartitionValues(

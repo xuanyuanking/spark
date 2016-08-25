@@ -297,6 +297,7 @@ private[sql] class ParquetRelation(
     val parquetFilterPushDown = sqlContext.conf.parquetFilterPushDown
     val assumeBinaryIsString = sqlContext.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sqlContext.conf.isParquetINT96AsTimestamp
+    val assumeNestColumnPruning = sqlContext.conf.isParquetNestColumnPruning
 
     // When merging schemas is enabled and the column of the given filter does not exist,
     // Parquet emits an exception which is an issue of Parquet (PARQUET-389).
@@ -317,7 +318,8 @@ private[sql] class ParquetRelation(
         useMetadataCache,
         safeParquetFilterPushDown,
         assumeBinaryIsString,
-        assumeInt96IsTimestamp) _
+        assumeInt96IsTimestamp,
+        assumeNestColumnPruning) _
 
     // Create the function to set input paths at the driver side.
     val setInputPaths =
@@ -563,7 +565,8 @@ private[sql] object ParquetRelation extends Logging {
       useMetadataCache: Boolean,
       parquetFilterPushDown: Boolean,
       assumeBinaryIsString: Boolean,
-      assumeInt96IsTimestamp: Boolean)(job: Job): Unit = {
+      assumeInt96IsTimestamp: Boolean,
+      assumeNestColumnPruning: Boolean)(job: Job): Unit = {
     val conf = SparkHadoopUtil.get.getConfigurationFromJobContext(job)
     conf.set(ParquetInputFormat.READ_SUPPORT_CLASS, classOf[CatalystReadSupport].getName)
 
@@ -580,8 +583,15 @@ private[sql] object ParquetRelation extends Logging {
 
     conf.set(CatalystReadSupport.SPARK_ROW_REQUESTED_SCHEMA, {
       val requestedSchema = StructType(requiredColumns.map(dataSchema(_)))
-      CatalystSchemaConverter.checkFieldNames(requestedSchema).json
+      val checkedSchema = CatalystSchemaConverter.checkFieldNames(requestedSchema)
+      if (assumeNestColumnPruning) {
+        checkedSchema.fields.map(f => StructType(Array(f))).reduceLeft(_ merge _).json
+      } else {
+        checkedSchema.json
+      }
     })
+
+    logInfo("lyjmark: " + conf.get(CatalystReadSupport.SPARK_ROW_REQUESTED_SCHEMA))
 
     conf.set(
       CatalystWriteSupport.SPARK_ROW_SCHEMA,

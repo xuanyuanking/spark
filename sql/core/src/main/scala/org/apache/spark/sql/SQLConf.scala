@@ -293,6 +293,10 @@ private[spark] object SQLConf {
       "nanoseconds field. This flag tells Spark SQL to interpret INT96 data as a timestamp to " +
       "provide compatibility with these systems.")
 
+  val PARQUET_NEST_COLUMN_PRUNING = booleanConf("spark.sql.parquet.nestColumnPruning",
+    defaultValue = Some(false),
+    doc = "When set this to true, we will tell parquet only read the nest column`s leaf fields ")
+
   val PARQUET_CACHE_METADATA = booleanConf("spark.sql.parquet.cacheMetadata",
     defaultValue = Some(true),
     doc = "Turns on caching of Parquet schema metadata. Can speed up querying of static data.")
@@ -546,6 +550,8 @@ private[sql] class SQLConf extends Serializable with CatalystConf {
   private[spark] def isParquetBinaryAsString: Boolean = getConf(PARQUET_BINARY_AS_STRING)
 
   private[spark] def isParquetINT96AsTimestamp: Boolean = getConf(PARQUET_INT96_AS_TIMESTAMP)
+
+  private[spark] def isParquetNestColumnPruning: Boolean = getConf(PARQUET_NEST_COLUMN_PRUNING)
 
   private[spark] def writeLegacyParquetFormat: Boolean = getConf(PARQUET_WRITE_LEGACY_FORMAT)
 
