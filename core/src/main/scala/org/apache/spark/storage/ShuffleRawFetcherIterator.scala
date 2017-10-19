@@ -17,7 +17,6 @@
 
 package org.apache.spark.storage
 
-import java.io.InputStream
 import java.util.concurrent.LinkedBlockingQueue
 import javax.annotation.concurrent.GuardedBy
 
@@ -35,7 +34,7 @@ import org.apache.spark.util.Utils
  * An iterator that fetches multiple blocks. For local blocks, it fetches from the local block
  * manager. For remote blocks, it fetches them using the provided BlockTransferService.
  *
- * This creates an iterator of (BlockID, InputStream) tuples so the caller can handle blocks
+ * This creates an iterator of (BlockID, ManagedBuffer) tuples so the caller can handle blocks
  * in a pipelined fashion as they are received.
  *
  * The implementation throttles the remote fetches so they don't exceed maxBytesInFlight to avoid
@@ -51,16 +50,15 @@ import org.apache.spark.util.Utils
  * @param maxReqsInFlight max number of remote requests to fetch blocks at any given point.
  */
 private[spark]
-class ShuffleBlockFetcherIterator(
-    context: TaskContext,
+final class ShuffleRawFetcherIterator(context: TaskContext,
     shuffleClient: ShuffleClient,
     blockManager: BlockManager,
     blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
     maxBytesInFlight: Long,
     maxReqsInFlight: Int)
-  extends Iterator[(BlockId, InputStream)] with Logging {
+  extends Iterator[(BlockId, ManagedBuffer)] with Logging {
 
-  import ShuffleBlockFetcherIterator._
+  import ShuffleRawFetcherIterator._
 
   /**
    * Total number of blocks to fetch. This can be smaller than the total number of blocks
@@ -171,7 +169,7 @@ class ShuffleBlockFetcherIterator(
         override def onBlockFetchSuccess(blockId: String, buf: ManagedBuffer): Unit = {
           // Only add the buffer to results queue if the iterator is not zombie,
           // i.e. cleanup() has not been called yet.
-          ShuffleBlockFetcherIterator.this.synchronized {
+          ShuffleRawFetcherIterator.this.synchronized {
             if (!isZombie) {
               // Increment the ref count because we need to pass this to a different thread.
               // This needs to be released after use.
@@ -303,7 +301,7 @@ class ShuffleBlockFetcherIterator(
    *
    * Throws a FetchFailedException if the next block could not be fetched.
    */
-  override def next(): (BlockId, InputStream) = {
+  override def next(): (BlockId, ManagedBuffer) = {
     if (!hasNext) {
       throw new NoSuchElementException
     }
@@ -337,7 +335,7 @@ class ShuffleBlockFetcherIterator(
 
       case SuccessFetchResult(blockId, address, _, buf, _) =>
         try {
-          (result.blockId, new BufferReleasingInputStream(buf.createInputStream(), this))
+          (result.blockId, buf)
         } catch {
           case NonFatal(t) =>
             throwFetchFailedException(blockId, address, t)
@@ -366,42 +364,8 @@ class ShuffleBlockFetcherIterator(
   }
 }
 
-/**
- * Helper class that ensures a ManagedBuffer is released upon InputStream.close()
- */
-private class BufferReleasingInputStream(
-    private val delegate: InputStream,
-    private val iterator: ShuffleBlockFetcherIterator)
-  extends InputStream {
-  private[this] var closed = false
-
-  override def read(): Int = delegate.read()
-
-  override def close(): Unit = {
-    if (!closed) {
-      delegate.close()
-      iterator.releaseCurrentResultBuffer()
-      closed = true
-    }
-  }
-
-  override def available(): Int = delegate.available()
-
-  override def mark(readlimit: Int): Unit = delegate.mark(readlimit)
-
-  override def skip(n: Long): Long = delegate.skip(n)
-
-  override def markSupported(): Boolean = delegate.markSupported()
-
-  override def read(b: Array[Byte]): Int = delegate.read(b)
-
-  override def read(b: Array[Byte], off: Int, len: Int): Int = delegate.read(b, off, len)
-
-  override def reset(): Unit = delegate.reset()
-}
-
 private[storage]
-object ShuffleBlockFetcherIterator {
+object ShuffleRawFetcherIterator {
 
   /**
    * A request to fetch blocks from a remote BlockManager.
