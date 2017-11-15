@@ -93,6 +93,7 @@ private[spark] class SortShuffleReader[K, C](
     // Update the spill metrics
     context.taskMetrics().incMemoryBytesSpilled(merger.memoryBytesSpilled)
     context.taskMetrics().incDiskBytesSpilled(merger.diskBytesSpilled)
+    context.taskMetrics().incPeakExecutionMemory(merger.peakMemoryUsedBytes)
 
     new InterruptibleIterator(context, metricIter.map(p => (p._1, p._2)))
   }
@@ -126,6 +127,10 @@ private[spark] class ExternalMerger[K, C](
 
   def diskBytesSpilled: Long = _diskBytesSpilled + tieredMerger.diskBytesSpilled
 
+  // Peak size of the in-memory data structure observed so far, in bytes
+  private var _peakMemoryUsedBytes: Long = 0L
+  def peakMemoryUsedBytes: Long = _peakMemoryUsedBytes
+
   /** keyComparator for mergeSort, id keyOrdering is not available,
    * using hashcode of key to compare */
   private val keyComparator: Comparator[K] = dep.keyOrdering.getOrElse(new Comparator[K] {
@@ -141,21 +146,31 @@ private[spark] class ExternalMerger[K, C](
    * blocks to spill and then spill them.
    */
   def insertBlock(tippingBlock: MemoryShuffleBlock): Unit = {
-    inMemoryBlocks += tippingBlock
+    if (tippingBlock.blockData.isDirect) {
+      // If the shuffle block is allocated on a direct buffer, copy it to an on-heap buffer,
+      // otherwise off heap memory will be increased to the shuffle memory size.
+      val onHeapBuffer = ByteBuffer.allocate(tippingBlock.blockData.size.toInt)
+      val newBuffer = tippingBlock.blockData.nioByteBuffer
+
+      onHeapBuffer.put(newBuffer)
+      // rewind the onHeapBuffer here, otherwise the stream unwrapped from the buffer is empty,
+      // this will cause the data left in memory lost during shuffle read.
+      onHeapBuffer.rewind()
+      inMemoryBlocks += MemoryShuffleBlock(tippingBlock.blockId,
+      new NioManagedBuffer(onHeapBuffer))
+        // tippingBlock memory released in BlockFetcherIter
+        // tippingBlock.blockData.release()
+    } else {
+      inMemoryBlocks += tippingBlock
+    }
     inMemorySize += tippingBlock.blockData.size
     addElementsRead()
     if (maybeSpill(inMemoryBlocks, inMemorySize, 1)) {
       inMemoryBlocks = new ArrayBuffer[MemoryShuffleBlock]()
       inMemorySize = 0
-    } else if (tippingBlock.blockData.isDirect) {
-      // If the shuffle block is allocated on a direct buffer, copy it to an on-heap buffer,
-      // otherwise off heap memory will be increased to the shuffle memory size.
-      val onHeapBuffer = ByteBuffer.allocate(tippingBlock.blockData.size.toInt)
-      onHeapBuffer.put(tippingBlock.blockData.nioByteBuffer)
-      inMemoryBlocks -= tippingBlock
-      inMemoryBlocks += MemoryShuffleBlock(tippingBlock.blockId,
-        new NioManagedBuffer(onHeapBuffer))
-      tippingBlock.blockData.release()
+    }
+    if (inMemorySize > _peakMemoryUsedBytes) {
+      _peakMemoryUsedBytes = inMemorySize
     }
   }
 
@@ -169,10 +184,11 @@ private[spark] class ExternalMerger[K, C](
 
     def releaseFinalShuffleMemory(): Unit = {
       inMemoryBlocks.foreach { block =>
-        block.blockData.release()
-        freeMemory(block.blockData.size)
+        // should not release the last block because it will release in ShuffleBlockFetchItr
+        if (block != inMemoryBlocks.last) block.blockData.release()
       }
       inMemoryBlocks.clear()
+      releaseMemory()
     }
     context.addTaskCompletionListener(_ => releaseFinalShuffleMemory())
 
