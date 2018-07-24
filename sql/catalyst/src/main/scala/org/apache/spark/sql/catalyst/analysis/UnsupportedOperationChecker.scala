@@ -347,7 +347,7 @@ object UnsupportedOperationChecker {
       subPlan match {
         case (_: Project | _: Filter | _: MapElements | _: MapPartitions |
               _: DeserializeToObject | _: SerializeFromObject | _: SubqueryAlias |
-              _: TypedFilter) =>
+              _: TypedFilter | _: Repartition | _: Aggregate) =>
         case node if node.nodeName == "StreamingRelationV2" =>
         case Repartition(1, false, _) =>
         case node: Aggregate =>

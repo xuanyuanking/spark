@@ -130,4 +130,57 @@ class ContinuousAggregationSuite extends ContinuousSuiteBase {
         CheckAnswer(5))
     }
   }
+
+  test("test simple repartition") {
+    val input = ContinuousMemoryStream[Int]
+    val df = input.toDF()
+
+    testStream(df.repartition(2))(
+      StartStream(),
+      AddData(input, 0, 1),
+      CheckAnswer(0, 1),
+      StopStream,
+      AddData(input, 2, 3),
+      StartStream(),
+      CheckAnswer(0, 1, 2, 3),
+      StopStream)
+  }
+
+  test("test continuous shuffle") {
+    val input = ContinuousMemoryStream[Int]
+
+    val df = input.toDF()
+      .repartition(2)
+      .planWithBarrier
+      .select('value as 'copy, 'value)
+      .agg(max('value))
+
+    testStream(df, OutputMode.Complete)(
+      AddData(input, 0, 1, 2),
+      CheckAnswer(2),
+      StopStream,
+      AddData(input, 3, 4, 5),
+      StartStream(),
+      CheckAnswer(5),
+      AddData(input, -1, -2, -3),
+      CheckAnswer(5))
+  }
+
+  test("test continuous shuffle - groupBy") {
+    val inputData = ContinuousMemoryStream[Int]
+    val agg = inputData.toDF().select('value as 'copy, 'value).groupBy("value").count()
+
+    testStream(agg, OutputMode.Complete)(
+      AddData(inputData, 1, 2),
+      StartStream(),
+      CheckAnswer((1, 1), (2, 1)))
+//      StopStream,
+//      AddData(inputData, (3, 0), (2, 0)),
+//      StartStream(additionalConfs = Map(SQLConf.SHUFFLE_PARTITIONS.key -> "5")),
+//      CheckAnswer((1, 1), (2, 2), (3, 1)),
+//      StopStream,
+//      AddData(inputData, (3, 0), (1, 0)),
+//      StartStream(additionalConfs = Map(SQLConf.SHUFFLE_PARTITIONS.key -> "1")),
+//      CheckAnswer((1, 2), (2, 2), (3, 2)))
+  }
 }

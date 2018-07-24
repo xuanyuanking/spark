@@ -99,6 +99,21 @@ class ShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
 
 /**
  * :: DeveloperApi ::
+ * Represents a dependency on the output of a shuffle stage of continuous type.
+ * Different with ShuffleDependency, the continuous dependency only create on Executor side,
+ * so the rdd in param is deserialized from taskBinary.
+ */
+@DeveloperApi
+class ContinuousDependency[K: ClassTag, V: ClassTag](
+    val _rdd: RDD[_ <: Product2[K, V]],
+    val partitioner: Partitioner)
+  extends Dependency[Product2[K, V]] {
+  override def rdd: RDD[Product2[K, V]] = _rdd.asInstanceOf[RDD[Product2[K, V]]]
+}
+
+
+/**
+ * :: DeveloperApi ::
  * Represents a one-to-one dependency between partitions of the parent and child RDDs.
  */
 @DeveloperApi

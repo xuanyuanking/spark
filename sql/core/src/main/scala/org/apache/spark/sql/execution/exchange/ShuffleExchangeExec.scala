@@ -29,8 +29,10 @@ import org.apache.spark.sql.catalyst.errors._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.physical._
+import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.execution.streaming.continuous.shuffle.ContinuousShuffledRowRDD
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.MutablePair
@@ -194,16 +196,10 @@ object ShuffleExchangeExec {
     }
   }
 
-  /**
-   * Returns a [[ShuffleDependency]] that will partition rows of its child based on
-   * the partitioning scheme defined in `newPartitioning`. Those partitions of
-   * the returned ShuffleDependency will be the input of shuffle.
-   */
-  def prepareShuffleDependency(
+  def preparePartitionerAndRDDWithPartitionIds(
       rdd: RDD[InternalRow],
       outputAttributes: Seq[Attribute],
-      newPartitioning: Partitioning,
-      serializer: Serializer): ShuffleDependency[Int, InternalRow, InternalRow] = {
+      newPartitioning: Partitioning): (Partitioner, RDD[Product2[Int, InternalRow]]) = {
     val part: Partitioner = newPartitioning match {
       case RoundRobinPartitioning(numPartitions) => new HashPartitioner(numPartitions)
       case HashPartitioning(_, n) =>
@@ -311,6 +307,23 @@ object ShuffleExchangeExec {
       }
     }
 
+    (part, rddWithPartitionIds)
+  }
+
+  /**
+   * Returns a [[ShuffleDependency]] that will partition rows of its child based on
+   * the partitioning scheme defined in `newPartitioning`. Those partitions of
+   * the returned ShuffleDependency will be the input of shuffle.
+   */
+  def prepareShuffleDependency(
+      rdd: RDD[InternalRow],
+      outputAttributes: Seq[Attribute],
+      newPartitioning: Partitioning,
+      serializer: Serializer): ShuffleDependency[Int, InternalRow, InternalRow] = {
+
+    val (part, rddWithPartitionIds) = preparePartitionerAndRDDWithPartitionIds(
+      rdd, outputAttributes, newPartitioning)
+
     // Now, we manually create a ShuffleDependency. Because pairs in rddWithPartitionIds
     // are in the form of (partitionId, row) and every partitionId is in the expected range
     // [0, part.numPartitions - 1]. The partitioner of this is a PartitionIdPassthrough.
@@ -323,3 +336,75 @@ object ShuffleExchangeExec {
     dependency
   }
 }
+
+/**
+ * Performs a continuous shuffle that will result in the desired `newPartitioning`.
+ */
+case class ContinuousShuffleExchangeExec(
+    var newPartitioning: Partitioning,
+    child: SparkPlan) extends Exchange {
+
+  override lazy val metrics = Map(
+    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"))
+
+  override def nodeName: String = "ContinuousShuffleExchange"
+
+  override def outputPartitioning: Partitioning = newPartitioning
+
+  override protected def doPrepare(): Unit = {}
+
+  /**
+   * Returns a [[ShuffleDependency]] that will partition rows of its child based on
+   * the partitioning scheme defined in `newPartitioning`. Those partitions of
+   * the returned ShuffleDependency will be the input of shuffle.
+   */
+  private[exchange] def prepareShuffleDependency()
+  : ContinuousDependency[Int, InternalRow] = {
+    val (partitioner, rdd) = ShuffleExchangeExec.preparePartitionerAndRDDWithPartitionIds(
+      child.execute(), child.output, newPartitioning)
+    val dep = new ContinuousDependency[Int, InternalRow](rdd, partitioner)
+    dep
+  }
+
+  /**
+   * Returns a [[ShuffledRowRDD]] that represents the post-shuffle dataset.
+   * This [[ShuffledRowRDD]] is created based on a given [[ShuffleDependency]] and an optional
+   * partition start indices array. If this optional array is defined, the returned
+   * [[ShuffledRowRDD]] will fetch pre-shuffle partitions based on indices of this array.
+   */
+  private[exchange] def preparePostShuffleRDD(
+      dependency: ContinuousDependency[Int, InternalRow]): ContinuousShuffledRowRDD = {
+    new ContinuousShuffledRowRDD(
+      dependency,
+      conf.continuousStreamingExecutorQueueSize)
+  }
+
+  /**
+   * Caches the created ShuffleRowRDD so we can reuse that.
+   */
+  private var cachedShuffleRDD: ContinuousShuffledRowRDD = null
+
+  protected override def doExecute(): RDD[InternalRow] = attachTree(this, "execute") {
+    // Returns the same ShuffleRowRDD if this plan is used by multiple plans.
+    if (cachedShuffleRDD == null) {
+      val dependency = prepareShuffleDependency()
+      cachedShuffleRDD = preparePostShuffleRDD(dependency)
+    }
+    cachedShuffleRDD
+  }
+}
+
+/**
+ * Get the total shuffle number of spark plan, then change all [[ShuffleExchangeExec]]
+ * to [[ContinuousShuffleExchangeExec]]
+ */
+case class ReplaceShuffleExchange(conf: SparkConf) extends Rule[SparkPlan] {
+  def apply(plan: SparkPlan): SparkPlan = {
+    // Change all ShuffleExchangeExec to ContinuousShuffleExchangeExec
+    plan transformDown {
+      case s: ShuffleExchangeExec =>
+        new ContinuousShuffleExchangeExec(s.newPartitioning, s.child)
+    }
+  }
+}
+
