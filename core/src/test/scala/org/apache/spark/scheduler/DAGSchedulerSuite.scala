@@ -2011,7 +2011,7 @@ class DAGSchedulerSuite extends SparkFunSuite with LocalSparkContext with TimeLi
 
   test("accumulator not calculated for resubmitted task in shuffle map stage") {
     val accum = AccumulatorSuite.createLongAccum("a")
-    // Create a shuffleMapRdd with 1 partition
+    // Create a shuffleMapRdd with 2 partition
     val shuffleMapRdd = new MyRDD(sc, 2, Nil)
     val shuffleDep = new ShuffleDependency(shuffleMapRdd, new HashPartitioner(1))
     val shuffleId = shuffleDep.shuffleId
