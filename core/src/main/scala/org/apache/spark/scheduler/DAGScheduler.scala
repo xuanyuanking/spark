@@ -39,7 +39,7 @@ import org.apache.spark.internal.config
 import org.apache.spark.internal.config.Tests.TEST_NO_STAGE_RETRY
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
-import org.apache.spark.rdd.{RDD, RDDCheckpointData}
+import org.apache.spark.rdd.{DeterministicLevel, RDD, RDDCheckpointData}
 import org.apache.spark.rpc.RpcTimeout
 import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.BlockManagerHeartbeat
@@ -1596,6 +1596,12 @@ private[spark] class DAGScheduler(
               // guaranteed to be determinate, so the input data of the reducers will not change
               // even if the map tasks are re-tried.
               if (mapStage.isIndeterminate()) {
+                // TODO: implement a better way for RDD unpersist, which only unpersist the
+                // unneeded ones, not all indeterminate persisted RDD.
+                sc.getPersistentRDDs.foreach { case (id, rdd)
+                  if rdd.outputDeterministicLevel == DeterministicLevel.INDETERMINATE =>
+                    sc.unpersistRDD(id, blocking = true)
+                }
                 // It's a little tricky to find all the succeeding stages of `failedStage`, because
                 // each stage only know its parents not children. Here we traverse the stages from
                 // the leaf nodes (the result stages of active jobs), and rollback all the stages
