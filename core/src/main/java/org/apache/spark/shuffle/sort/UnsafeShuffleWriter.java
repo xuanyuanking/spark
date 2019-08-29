@@ -75,7 +75,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private final Partitioner partitioner;
   private final ShuffleWriteMetricsReporter writeMetrics;
   private final int shuffleId;
-  private final int mapId;
+  private final long mapTaskId;
   private final TaskContext taskContext;
   private final SparkConf sparkConf;
   private final boolean transferToEnabled;
@@ -120,7 +120,6 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       IndexShuffleBlockResolver shuffleBlockResolver,
       TaskMemoryManager memoryManager,
       SerializedShuffleHandle<K, V> handle,
-      int mapId,
       TaskContext taskContext,
       SparkConf sparkConf,
       ShuffleWriteMetricsReporter writeMetrics) throws IOException {
@@ -134,7 +133,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     this.blockManager = blockManager;
     this.shuffleBlockResolver = shuffleBlockResolver;
     this.memoryManager = memoryManager;
-    this.mapId = mapId;
+    this.mapTaskId = taskContext.taskAttemptId();
     final ShuffleDependency<K, V, V> dep = handle.dependency();
     this.shuffleId = dep.shuffleId();
     this.serializer = dep.serializer().newInstance();
@@ -231,7 +230,7 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     final SpillInfo[] spills = sorter.closeAndGetSpills();
     sorter = null;
     final long[] partitionLengths;
-    final File output = shuffleBlockResolver.getDataFile(shuffleId, mapId);
+    final File output = shuffleBlockResolver.getDataFile(shuffleId, mapTaskId);
     final File tmp = Utils.tempFileWith(output);
     try {
       try {
@@ -243,13 +242,14 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
           }
         }
       }
-      shuffleBlockResolver.writeIndexFileAndCommit(shuffleId, mapId, partitionLengths, tmp);
+      shuffleBlockResolver.writeIndexFileAndCommit(shuffleId, mapTaskId, partitionLengths, tmp);
     } finally {
       if (tmp.exists() && !tmp.delete()) {
         logger.error("Error while deleting temp file {}", tmp.getAbsolutePath());
       }
     }
-    mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths);
+    mapStatus = MapStatus$.MODULE$.apply(
+      blockManager.shuffleServerId(), partitionLengths, mapTaskId);
   }
 
   @VisibleForTesting

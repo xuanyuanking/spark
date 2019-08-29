@@ -131,7 +131,7 @@ public class UnsafeShuffleWriterSuite {
         );
       });
 
-    when(shuffleBlockResolver.getDataFile(anyInt(), anyInt())).thenReturn(mergedOutputFile);
+    when(shuffleBlockResolver.getDataFile(anyInt(), anyLong())).thenReturn(mergedOutputFile);
     doAnswer(invocationOnMock -> {
       partitionSizesInMergedFile = (long[]) invocationOnMock.getArguments()[2];
       File tmp = (File) invocationOnMock.getArguments()[3];
@@ -139,7 +139,7 @@ public class UnsafeShuffleWriterSuite {
       tmp.renameTo(mergedOutputFile);
       return null;
     }).when(shuffleBlockResolver)
-      .writeIndexFileAndCommit(anyInt(), anyInt(), any(long[].class), any(File.class));
+      .writeIndexFileAndCommit(anyInt(), anyLong(), any(long[].class), any(File.class));
 
     when(diskBlockManager.createTempShuffleBlock()).thenAnswer(invocationOnMock -> {
       TempShuffleBlockId blockId = new TempShuffleBlockId(UUID.randomUUID());
@@ -160,8 +160,7 @@ public class UnsafeShuffleWriterSuite {
       blockManager,
       shuffleBlockResolver,
       taskMemoryManager,
-      new SerializedShuffleHandle<>(0, 1, shuffleDep),
-      0, // map id
+      new SerializedShuffleHandle<>(0, shuffleDep),
       taskContext,
       conf,
       taskContext.taskMetrics().shuffleWriteMetrics()
@@ -521,8 +520,7 @@ public class UnsafeShuffleWriterSuite {
         blockManager,
         shuffleBlockResolver,
         taskMemoryManager,
-        new SerializedShuffleHandle<>(0, 1, shuffleDep),
-        0, // map id
+        new SerializedShuffleHandle<>(0, shuffleDep),
         taskContext,
         conf,
         taskContext.taskMetrics().shuffleWriteMetrics());
