@@ -84,7 +84,7 @@
         </exclusion>
       </exclusions>
     </dependency>
-=    <dependency>
+    <dependency>
       <groupId>org.apache.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
       <scope>test</scope>
