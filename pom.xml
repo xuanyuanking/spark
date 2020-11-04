@@ -1561,10 +1561,6 @@
             <artifactId>netty-transport</artifactId>
           </exclusion>
           <exclusion>
-            <groupId>org.apache.zookeeper</groupId>
-            <artifactId>zookeeper-jute</artifactId>
-          </exclusion>
-          <exclusion>
             <groupId>com.github.spotbugs</groupId>
             <artifactId>spotbugs-annotations</artifactId>
           </exclusion>
